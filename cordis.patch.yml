@@ -1,0 +1,52 @@
+# The @argszero/dsh-host-plane-registration-guard bundle patch: mount and go.
+#
+# When an agent preset cannot mount, the registry records **one** string and later
+# throws it as a single `RemoteError('agent-preset/invalid')`. That string is
+# `auditRows(tree).failed.join('\n')` (`agent-preset-registry/src/mount.ts`), built
+# from `mountPreset`'s row audit, and each line is
+# `<entryId> (<module>): <the row's own failure>`. A reader therefore sees a wall of
+# "already registered" lines without a way to tell which of the two owners is the
+# duplicate — discussion #10545 reports exactly that, with `tool-subagent`'s own
+# refusal (`requires a scoped preset Context`) mixed into the same wall.
+#
+# The wall already carries the discriminating fact, because the core factories
+# branch on `scope === undefined`:
+#
+#   `dsh-system-prompt` (`:406-415`) and `dsh-tools` (`:748`) append
+#   "(for a per-agent override, register through that agent's `agent.ctx` instead)"
+#   ONLY for the global layer, and say "in this scope" for a scoped one.
+#
+# What they do not carry is the second half — whether the failing module is **also**
+# mounted at the deployment plane, which is the fact that decides the fix: a module
+# present in both a profile bundle and a preset's plugin list is the same plugin
+# declared twice, and the preset row then registers into a plane that already holds
+# the name.
+#
+# This plugin reads the two public rosters — `agentPresets.list()` and the Loader's
+# entry tree — and reports one line per failing row: the preset, the row, the
+# registry name it claimed, the layer the rejection hit, and whether that module is
+# also mounted at the deployment plane. It reads and reports only: it never edits a
+# composition, never disables a row, never touches a session and never suppresses a
+# failure.
+#
+# It is a diagnosis, not a repair. The row-level failures stay the composition
+# owner's to fix, and the layer a rejection lands on is decided by the registration
+# context, which no plugin can rewrite for another plugin's row.
+#
+# Optional config:
+#
+#   - set:
+#       - id: host-plane-registration-guard
+#         config:
+#           # Take one reading when the plugin activates (default true).
+#           # `false` leaves every reading to an explicit `inspect({ ctx })` call.
+#           eager: true
+#           # Milliseconds to wait before the automatic reading, for a Host tree
+#           # that is still settling. Defaults to 0.
+#           delayMs: 0
+#           # Whether the automatic reading is logged once (default true).
+#           log: true
+
+- insert:
+    - id: host-plane-registration-guard
+      name: '@argszero/dsh-host-plane-registration-guard'

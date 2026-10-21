@@ -1,0 +1,163 @@
+/**
+ * Name the rows of a failed agent-preset mount and the plane each one hit.
+ *
+ * A preset that cannot mount reports every unusable row as one line of a single
+ * `broken` string, and a reader sees a wall of "already registered" lines with
+ * no way to tell which of their two owners is the duplicate. This plugin reads
+ * the two public rosters — `agentPresets.list()` and the Loader's entry tree —
+ * and turns each line into one named cause, saying whether the row registered
+ * on the deployment plane or inside its own scope.
+ *
+ * It reads and reports; it never edits a composition, never disables a row and
+ * never touches a session.
+ * @module @argszero/dsh-host-plane-registration-guard
+ */
+import { diagnose, formatFinding, type Diagnosis } from './diagnose.js'
+
+export { diagnose, formatFinding } from './diagnose.js'
+export type { Diagnosis, Finding, FindingKind, PresetDiagnosis } from './diagnose.js'
+
+/** Cordis plugin name. */
+export const name = 'host-plane-registration-guard'
+
+/** Plugin configuration. */
+export interface Config {
+  /** Take one reading when the plugin activates; false leaves it to an explicit call. */
+  eager: boolean
+  /** Milliseconds to wait before the automatic reading, for a Host tree still settling. */
+  delayMs: number
+  /** Log the reading once. */
+  log: boolean
+}
+
+/** Defaults, applied by {@link Config}. */
+const DEFAULTS: Config = { eager: true, delayMs: 0, log: true }
+
+/**
+ * Runtime schema in the standard-schema dialect the Loader accepts, kept
+ * dependency-free: this package ships no runtime dependencies.
+ */
+export const Config = {
+  '~standard': {
+    version: 1 as const,
+    vendor: 'dsh-host-plane-registration-guard',
+    /**
+     * Validate the declared configuration.
+     * @param value - the raw configuration node.
+     * @returns the configuration, or the problems that make it unusable.
+     */
+    validate(value: unknown): { value: Config } | { issues: { message: string }[] } {
+      const issues: { message: string }[] = []
+      const row = (value ?? {}) as Partial<Config>
+      if (row.eager !== undefined && typeof row.eager !== 'boolean') issues.push({ message: 'eager must be a boolean' })
+      if (row.log !== undefined && typeof row.log !== 'boolean') issues.push({ message: 'log must be a boolean' })
+      if (row.delayMs !== undefined && (typeof row.delayMs !== 'number' || !Number.isFinite(row.delayMs) || row.delayMs < 0)) {
+        issues.push({ message: 'delayMs must be a non-negative finite number' })
+      }
+      if (issues.length > 0) return { issues }
+      return { value: { ...DEFAULTS, ...row } }
+    },
+  },
+}
+
+/** A pending timer, as the host runtime hands one back. */
+interface TimerHandle {
+  /** Release the event loop's hold on the process, where the runtime offers it. */
+  unref?(): void
+}
+
+/* Declared here rather than derived from `@types/node`: this package installs no
+   development dependency it does not need, and these two globals are all of it. */
+declare const setTimeout: (callback: () => void, milliseconds: number) => TimerHandle
+declare const clearTimeout: (handle: TimerHandle) => void
+
+/** The slice of a Cordis context this plugin uses. */
+interface Context {
+  get(name: string): unknown
+  effect?(callback: () => unknown, label?: string): unknown
+  logger?: { warn(...args: unknown[]): void }
+}
+
+/** One Loader entry, as much of it as the host plane is read through. */
+interface Entry {
+  readonly options?: { readonly name?: unknown, readonly group?: unknown }
+  readonly disabled?: unknown
+  readonly tree?: unknown
+}
+
+/** The Loader service surface used here. */
+interface LoaderLike {
+  readonly root?: { readonly tree?: unknown }
+  entries?(): Iterable<Entry>
+}
+
+/**
+ * Module specifiers mounted at the deployment plane.
+ *
+ * Group rows are structural and carry no module of their own, so they are
+ * skipped rather than reported as an unnamed owner.
+ * @param loader - the Loader service.
+ * @returns the specifiers, or an empty list when the Loader is unreadable.
+ */
+export function hostPlaneModules(loader: unknown): string[] {
+  const service = loader as LoaderLike | undefined
+  const tree = (service?.root?.tree ?? service) as { entries?: () => Iterable<Entry> } | undefined
+  const entries = tree?.entries
+  if (typeof entries !== 'function') return []
+  const found: string[] = []
+  for (const entry of entries.call(tree)) {
+    if (entry.options?.group === true) continue
+    const specifier = entry.options?.name
+    if (typeof specifier === 'string' && specifier !== '') found.push(specifier)
+  }
+  return [...new Set(found)].sort((left, right) => left.localeCompare(right))
+}
+
+/** What one reading needs from its caller. */
+export interface InspectOptions {
+  /** The runtime context to read the rosters through. */
+  readonly ctx: Context
+  /** Report the reading through the context logger. */
+  readonly log?: boolean
+}
+
+/**
+ * Take one reading of every preset's mount diagnostic.
+ * @param options - the context to read through and whether to log.
+ * @returns the report, empty when no preset reported a failure.
+ */
+export async function inspect(options: InspectOptions): Promise<Diagnosis> {
+  const { ctx, log = true } = options
+  const presets = ctx.get('agentPresets') as { list?(): Promise<{ id: string, broken?: string }[]> } | undefined
+  const loader = ctx.get('loader')
+  const hostModules = hostPlaneModules(loader)
+
+  if (typeof presets?.list !== 'function') {
+    return { presets: [], hostModules, collisions: [] }
+  }
+  const roster = await presets.list()
+  const report = diagnose(Array.isArray(roster) ? roster : [], hostModules)
+  if (log && report.presets.length > 0) {
+    const lines = report.presets.flatMap(row => row.findings.map(finding => formatFinding(finding)))
+    ctx.logger?.warn('agent preset mounts failed; per-row causes:\n%s', lines.join('\n'))
+    if (report.collisions.length > 0) {
+      ctx.logger?.warn('names claimed twice: %s', report.collisions.join('; '))
+    }
+  }
+  return report
+}
+
+/**
+ * Mount the plugin: take one reading after activation unless configured off.
+ * @param ctx - the plugin's context.
+ * @param config - declared configuration.
+ */
+export function apply(ctx: Context, config: Config = DEFAULTS): void {
+  if (!config.eager) return
+  const handle = setTimeout(() => { void inspect({ ctx, log: config.log }).catch(() => {}) }, config.delayMs)
+  // A doctor must never hold the process open on its own account.
+  handle.unref?.()
+  ctx.effect?.(() => () => { clearTimeout(handle) }, 'host-plane-registration-guard.reading')
+}
+
+export default { name, Config, apply }
