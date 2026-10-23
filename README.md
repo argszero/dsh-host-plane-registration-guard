@@ -72,8 +72,9 @@ plugin can rewrite on behalf of a third.
 ```
 
 Or mount it as a bundle: the package declares `dsh.bundle.patch`, so
-`dsh plugin add @argszero/dsh-host-plane-registration-guard` plus one entry in
-`dsh.profile.bundles` is enough.
+`dsh plugin --profile <profile> add github:argszero/dsh-host-plane-registration-guard`
+writes the one `dsh.profile.bundles` entry it needs. The package is installed
+from its repository, not from npm.
 
 Optional configuration:
 
