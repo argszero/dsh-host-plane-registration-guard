@@ -1,6 +1,6 @@
 {
   "name": "@argszero/dsh-host-plane-registration-guard",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Names the rows of a failed agent-preset mount and the plane each rejected registration hit. A preset that cannot mount reports every unusable row as one line of a single `broken` string, so a reader sees a wall of `already registered` errors with no way to tell which of the two owners is the duplicate. This plugin reads the two public rosters - `agentPresets.list()` and the Loader's entry tree - and turns each line into one named cause: whether the row registered on the deployment (global) plane or inside its own scope, which registry name it claimed, and whether the same module is also mounted at the deployment plane. The core error factories branch on `scope === undefined`, so the layer is readable from the text itself; the plugin adds the module-to-plane intersection the text does not carry. It reads and reports, never edits a composition, never disables a row and never writes a session. Zero runtime dependencies.",
   "publishConfig": {
     "access": "public"
